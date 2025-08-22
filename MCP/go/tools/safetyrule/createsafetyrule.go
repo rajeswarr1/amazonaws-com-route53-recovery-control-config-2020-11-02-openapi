@@ -1,0 +1,94 @@
+package tools
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"bytes"
+
+	"github.com/aws-route53-recovery-control-config/mcp-server/config"
+	"github.com/aws-route53-recovery-control-config/mcp-server/models"
+	"github.com/mark3labs/mcp-go/mcp"
+)
+
+func CreatesafetyruleHandler(cfg *config.APIConfig) func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		args, ok := request.Params.Arguments.(map[string]any)
+		if !ok {
+			return mcp.NewToolResultError("Invalid arguments object"), nil
+		}
+		// Create properly typed request body using the generated schema
+		var requestBody map[string]interface{}
+		
+		// Optimized: Single marshal/unmarshal with JSON tags handling field mapping
+		if argsJSON, err := json.Marshal(args); err == nil {
+			if err := json.Unmarshal(argsJSON, &requestBody); err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("Failed to convert arguments to request type: %v", err)), nil
+			}
+		} else {
+			return mcp.NewToolResultError(fmt.Sprintf("Failed to marshal arguments: %v", err)), nil
+		}
+		
+		bodyBytes, err := json.Marshal(requestBody)
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("Failed to encode request body", err), nil
+		}
+		url := fmt.Sprintf("%s/safetyrule", cfg.BaseURL)
+		req, err := http.NewRequest("POST", url, bytes.NewBuffer(bodyBytes))
+		req.Header.Set("Content-Type", "application/json")
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("Failed to create request", err), nil
+		}
+		// Set authentication based on auth type
+		// Handle multiple authentication parameters
+		if cfg.BearerToken != "" {
+			req.Header.Set("X-Amz-Security-Token", cfg.BearerToken)
+		}
+		req.Header.Set("Accept", "application/json")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("Request failed", err), nil
+		}
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("Failed to read response body", err), nil
+		}
+
+		if resp.StatusCode >= 400 {
+			return mcp.NewToolResultError(fmt.Sprintf("API error: %s", body)), nil
+		}
+		// Use properly typed response
+		var result models.CreateSafetyRuleResponse
+		if err := json.Unmarshal(body, &result); err != nil {
+			// Fallback to raw text if unmarshaling fails
+			return mcp.NewToolResultText(string(body)), nil
+		}
+
+		prettyJSON, err := json.MarshalIndent(result, "", "  ")
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("Failed to format JSON", err), nil
+		}
+
+		return mcp.NewToolResultText(string(prettyJSON)), nil
+	}
+}
+
+func CreateCreatesafetyruleTool(cfg *config.APIConfig) models.Tool {
+	tool := mcp.NewTool("post_safetyrule",
+		mcp.WithDescription("<p>Creates a safety rule in a control panel. Safety rules let you add safeguards around changing routing control states, and for enabling and disabling routing controls, to help prevent unexpected outcomes.</p> <p>There are two types of safety rules: assertion rules and gating rules.</p> <p>Assertion rule: An assertion rule enforces that, when you change a routing control state, that a certain criteria is met. For example, the criteria might be that at least one routing control state is On after the transaction so that traffic continues to flow to at least one cell for the application. This ensures that you avoid a fail-open scenario.</p> <p>Gating rule: A gating rule lets you configure a gating routing control as an overall "on/off" switch for a group of routing controls. Or, you can configure more complex gating scenarios, for example by configuring multiple gating routing controls.</p> <p>For more information, see <a href="https://docs.aws.amazon.com/r53recovery/latest/dg/routing-control.safety-rules.html">Safety rules</a> in the Amazon Route 53 Application Recovery Controller Developer Guide.</p>"),
+		mcp.WithObject("Tags", mcp.Description("Input parameter: The tags associated with the safety rule.")),
+		mcp.WithObject("AssertionRule", mcp.Description("Input parameter: A new assertion rule for a control panel.")),
+		mcp.WithString("ClientToken", mcp.Description("Input parameter: A unique, case-sensitive string of up to 64 ASCII characters. To make an idempotent API request with an action, specify a client token in the request.")),
+		mcp.WithObject("GatingRule", mcp.Description("Input parameter: A new gating rule for a control panel.")),
+	)
+
+	return models.Tool{
+		Definition: tool,
+		Handler:    CreatesafetyruleHandler(cfg),
+	}
+}
